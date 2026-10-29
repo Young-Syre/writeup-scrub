@@ -33,6 +33,49 @@ LANGUAGE_SIGNALS: tuple[tuple[str, re.Pattern[str], int], ...] = (
 
 LANGUAGE_PRIORITY = ("http", "json", "sql", "powershell", "python", "bash")
 
+# Characters that occupy no width when the page is rendered. A zero-width space
+# dropped into the middle of a flag renders as the whole flag but reads to a
+# regex as two short hex runs, so every one of these has to go before any rule
+# looks at the text. U+FEFF is only stripped mid-line: a leading byte-order
+# mark is the file's own, not an evasion.
+INVISIBLE_RE = re.compile(
+    "[\u00ad\u200b\u200c\u200d\u2060\u180e\u061c\u200e\u200f"
+    "\u202a-\u202e\u2066-\u2069\ufeff]"
+)
+
+
+def strip_invisible(doc: Document) -> list[Finding]:
+    """Remove zero-width and bidirectional format characters, in place.
+
+    This is the one hygiene step that has to run *before* the rules rather than
+    after them, and the one that applies inside code fences as well as outside:
+    a zero-width space is never meaningful code content, and a flag pasted into
+    a fence is exactly where one would hide.
+    """
+    findings: list[Finding] = []
+    for _, line in doc.active():
+        cleaned = INVISIBLE_RE.sub("", line.text[1:])
+        head = line.text[:1]
+        if head and head != "\ufeff":
+            head = INVISIBLE_RE.sub("", head)
+        cleaned = head + cleaned
+        if cleaned == line.text:
+            continue
+        removed = len(line.text) - len(cleaned)
+        line.text = cleaned
+        findings.append(
+            Finding(
+                rule="MD-ZW",
+                severity=Severity.INFO,
+                kind="hygiene",
+                line=line.number,
+                message=(
+                    f"{removed} zero-width or bidirectional character(s) removed"
+                ),
+            )
+        )
+    return findings
+
 
 class Hygiene:
     """Applies the markdown hygiene pass to a document in place."""

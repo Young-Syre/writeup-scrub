@@ -206,3 +206,46 @@ class ManifestTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InvisibleCharacterTests(unittest.TestCase):
+    """Zero-width characters are stripped before any rule looks at the text.
+
+    A U+200B in the middle of a flag renders as the whole flag but reads to a
+    regex as two short hex runs, so the value would otherwise publish intact.
+    """
+
+    HEX = "8846f7eaee8fb117ad06bdd830b7586c"
+
+    def _run(self, text: str):
+        return process_text(text, "t.md", Config())
+
+    def test_zero_width_space_does_not_hide_a_flag(self):
+        split = self.HEX[:16] + "​" + self.HEX[16:]
+        result = self._run(f"User flag: {split}\n")
+        self.assertNotIn(self.HEX, result.output)
+        self.assertNotIn("​", result.output)
+        self.assertIn("[REDACTED: platform flag]", result.output)
+
+    def test_bidi_override_does_not_hide_a_braced_flag(self):
+        result = self._run("HTB{re‮al}\n")
+        self.assertNotIn("‮", result.output)
+        self.assertIn("[REDACTED: platform flag]", result.output)
+
+    def test_stripping_happens_inside_code_fences_too(self):
+        split = self.HEX[:16] + "​" + self.HEX[16:]
+        result = self._run(f"```\n$ cat user.txt\n{split}\n```\n")
+        self.assertNotIn(self.HEX, result.output)
+        self.assertIn("[REDACTED: platform flag]", result.output)
+
+    def test_a_leading_byte_order_mark_is_left_alone(self):
+        result = self._run("﻿# Machine\n")
+        self.assertTrue(result.output.startswith("﻿"))
+        self.assertEqual([f for f in result.findings if f.rule == "MD-ZW"], [])
+
+    def test_the_strip_is_reported_as_a_hygiene_change(self):
+        result = self._run("a​b\n")
+        hygiene = [f for f in result.findings if f.rule == "MD-ZW"]
+        self.assertEqual(len(hygiene), 1)
+        self.assertEqual(hygiene[0].kind, "hygiene")
+        self.assertIn("zero-width", hygiene[0].message)

@@ -15,7 +15,7 @@ from .findings import (
     severity_rank,
     sort_findings,
 )
-from .hygiene import Hygiene
+from .hygiene import Hygiene, strip_invisible
 from .rules import ALL_RULES
 
 MARKDOWN_SUFFIXES = {".md", ".markdown", ".mdx"}
@@ -62,6 +62,10 @@ def process_text(text: str, path: str, config: Config) -> FileResult:
     """Apply every enabled rule, then the hygiene pass."""
     doc = Document.from_text(text, path=path)
     findings: list[Finding] = []
+
+    # Before anything else: a rule cannot match a value that has a zero-width
+    # character in the middle of it, and the reader cannot see one either.
+    findings += strip_invisible(doc)
 
     for rule in ALL_RULES:
         if not config.is_enabled(rule.id):
