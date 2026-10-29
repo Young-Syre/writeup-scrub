@@ -75,14 +75,29 @@ I grabbed the user flag only after cracking the NTLM hash
 
 Both "flag" and "hash" appear; "hash" is closer, so the value survives.
 
-Braced flags (`HTB{...}`, `flag{...}`) are unambiguous and always redacted.
-Well-known constants (the empty LM and NT hashes, the MD5 of the empty string)
-are never redacted, whatever the context claims.
+Braced flags are unambiguous and always redacted, case-insensitively —
+`HTB{...}`, `htb{...}`, `thm{...}`, `Flag{...}`, `PICOCTF{...}`, `Key{...}`.
+Platforms are inconsistent about case and writeups are worse, and a THM or
+picoCTF flag is words rather than hex, so nothing downstream would catch one
+that slipped through here. Well-known constants (the empty LM and NT hashes,
+the MD5 of the empty string) are never redacted, whatever the context claims.
 
-**The deliberate boundary:** a bare 32-hex string alone on a line, with no
-context anywhere near it, is genuinely ambiguous. The default is to keep it and
-warn, so you decide. Set `redact_bare_hex = true` if you would rather it be
-redacted, or `warn_on_bare_hex = false` to silence it.
+**The deliberate boundary:** a bare 32-hex string with no context anywhere near
+it is genuinely ambiguous, so it is kept and warned about rather than redacted.
+The warning fires wherever the value sits — `then I pasted <flag> into the box`
+is as unlabelled as a hex string on its own line. *Redaction* of an unlabelled
+value is narrower: `redact_bare_hex = true` only redacts one alone on a line,
+because a 32-hex string in running text is usually a hash. Set
+`warn_on_bare_hex = false` to silence the warning. A `md5sum`-shaped line
+(digest, two spaces, filename) is read as a checksum and neither redacted nor
+warned about.
+
+Zero-width and bidirectional characters are stripped from every line before any
+rule runs, inside code fences as well as outside. A `U+200B` in the middle of a
+flag renders as the whole flag but reads to a regex as two short hex runs, so a
+value carrying one would otherwise publish intact. A 32-hex string embedded in
+a longer hex run (`<32hex>deadbeef`) is still not matched — the boundary
+assertions require it to stand alone.
 
 The flag-vs-hash behaviour is tested in both directions — a positive fixture
 where every flag must be redacted and a negative fixture where every hash must
@@ -209,6 +224,15 @@ WS007 is deliberately a reporter. Silently deleting a half-finished thought is
 worse than publishing it, because you would never know the section was empty.
 
 ### Detail worth knowing
+
+**WS002** bounds the search for a PEM key body by shape — base64 lines, RFC
+1421 headers, and the blank line between them. A writeup quite reasonably
+contains a `-----BEGIN OPENSSH PRIVATE KEY-----` line with no matching `END`,
+because someone pasted the first line to show the key was unencrypted. Scanning
+forward to the `END` banner and treating everything in between as key material
+deletes the rest of the file in that case, so the scan stops at the first line
+that is not key-shaped. A banner with no key body after it is reported as a
+`medium` warning and changes nothing.
 
 **WS003** rewrites *every* home directory by default, including a target
 machine's `/home/svc_apache`. In a writeup repository you almost always want:
@@ -371,7 +395,7 @@ from the working directory upwards, or passed with `--config`.
 enabled = true
 marker = "[REDACTED: platform flag]"
 context_lines = 5            # how far back flag/hash context may reach
-redact_bare_hex = false      # unlabelled 32-hex alone on a line
+redact_bare_hex = false      # redact unlabelled 32-hex alone on a line
 warn_on_bare_hex = true
 redact_braced_flags = true
 extra_flag_keywords = []     # add your own context words
@@ -530,7 +554,7 @@ Worth being straight about:
 python -m unittest discover -s tests -t . -v
 ```
 
-270 tests, entirely offline — the retirement check is exercised through a
+286 tests, entirely offline — the retirement check is exercised through a
 mocked fetcher, so no test needs network access or a token. Each rule is tested
 firing on a positive fixture and staying silent on a negative one, WS001 is
 tested in both directions, and every negative fixture is additionally run with
