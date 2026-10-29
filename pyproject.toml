@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "writeup-scrub"
+version = "0.1.0"
+description = "Sanitise security writeups and CTF notes before publication."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "David Nichols" }]
+keywords = ["security", "ctf", "writeup", "redaction", "secrets", "hackthebox"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Information Technology",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Security",
+  "Topic :: Text Processing :: Markup :: Markdown",
+]
+# No runtime dependencies: the core logic and the retirement check both use
+# only the standard library (tomllib, urllib, difflib, unittest).
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Young-Syre/writeup-scrub"
+Source = "https://github.com/Young-Syre/writeup-scrub"
+Issues = "https://github.com/Young-Syre/writeup-scrub/issues"
+
+[project.scripts]
+writeup-scrub = "writeup_scrub.cli:main"
+
+[tool.setuptools]
+packages = ["writeup_scrub", "writeup_scrub.rules", "writeup_scrub.platforms"]
+
+[tool.setuptools.package-data]
+writeup_scrub = ["py.typed"]

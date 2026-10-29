@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Local output: scrubbed copies and redaction manifests never belong in git.
+scrubbed/
+public/
+*.scrub.json
+writeup-scrub-report.json
