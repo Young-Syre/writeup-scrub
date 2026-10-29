@@ -11,9 +11,15 @@ Resolution order for a 32-hex candidate:
 1. the text *before* the match on the same line -- nearest keyword wins
 2. the text *after* the match on the same line
 3. preceding lines (bounded by the enclosing code fence, ``context_lines`` deep)
-4. nothing matched -> keep it, and warn if the hex sits alone on a line
+4. nothing matched -> keep it, and warn so a human decides
 
-Braced flags (``HTB{...}``, ``flag{...}``) are unambiguous and always redacted.
+An unlabelled candidate is only *redacted* when it sits alone on a line and
+``redact_bare_hex`` is on, because that is what a pasted flag looks like and a
+32-hex string in running text is usually a hash. It is *warned* about either
+way: a flag in the middle of a sentence is no less a flag.
+
+Braced flags (``HTB{...}``, ``thm{...}``) are unambiguous and always redacted,
+case-insensitively.
 """
 
 from __future__ import annotations
@@ -27,8 +33,20 @@ from .base import Rule, keyword_pattern, substitute_lines
 
 HEX32_RE = re.compile(r"(?<![0-9A-Za-z])([0-9a-fA-F]{32})(?![0-9A-Za-z])")
 
+# `md5sum` and friends print the digest, two spaces (or a space and `*` in
+# binary mode), then the filename. A flag is never written that way, and the
+# shape is common enough in a writeup that recognising it is cheaper than
+# warning about every checksum.
+CHECKSUM_TAIL_RE = re.compile(r"^(?:[ \t]{2}|[ \t]\*)\S")
+
+# Case-insensitive on purpose: platforms are inconsistent about it and writeups
+# are worse. ``thm{...}`` and ``PICOCTF{...}`` are as real as ``HTB{...}``, and
+# a THM or picoCTF flag is words rather than hex, so nothing downstream would
+# catch one that slipped through here. PICOCTF precedes PICO so that the longer
+# prefix wins in ``picoCTF{...}``.
 BRACED_FLAG_RE = re.compile(
-    r"\b(?:HTB|THM|FLAG|flag|CTF|picoCTF|pico|KEY|key)\{[^}\n]{1,256}\}"
+    r"\b(?:HTB|THM|FLAG|CTF|PICOCTF|PICO|KEY)\{[^}\n]{1,256}\}",
+    re.IGNORECASE,
 )
 
 # Signals that the nearby hex is a platform flag.
@@ -156,8 +174,14 @@ class FlagRule(Rule):
             )
             if verdict == "flag":
                 return marker
-            if verdict is None and self._is_alone_on_line(line, match):
-                if cfg.get("redact_bare_hex", False):
+            if verdict is None:
+                alone = self._is_alone_on_line(line, match)
+                # Redaction stays scoped to a hex string alone on a line, which
+                # is what a pasted flag looks like. The *warning* is not: an
+                # unlabelled flag is just as unlabelled in the middle of a
+                # sentence ("then I pasted <flag> into the box"), and the point
+                # of the warning is that a human decides.
+                if alone and cfg.get("redact_bare_hex", False):
                     return marker
                 if cfg.get("warn_on_bare_hex", True):
                     bare_hex_warnings.append(
@@ -167,8 +191,9 @@ class FlagRule(Rule):
                             line=line.number,
                             kind="warning",
                             message=(
-                                "unlabelled 32-hex string alone on a line -- could be "
-                                "a flag or a hash; review it by hand"
+                                "unlabelled 32-hex string "
+                                + ("alone on a line" if alone else "in running text")
+                                + " -- could be a flag or a hash; review it by hand"
                             ),
                         )
                     )
@@ -207,6 +232,9 @@ class FlagRule(Rule):
         verdict = _nearest(after, flag_re, hash_re, prefer="first")
         if verdict is not None:
             return verdict
+
+        if not before.strip() and CHECKSUM_TAIL_RE.match(after):
+            return "hash"
 
         return self._context_verdict(
             doc, index, flag_re=flag_re, hash_re=hash_re, limit=context_lines

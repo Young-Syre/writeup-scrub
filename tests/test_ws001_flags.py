@@ -229,3 +229,73 @@ class AmbiguousHexTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BracedFlagCaseTests(unittest.TestCase):
+    """Platforms are inconsistent about case; writeups are worse.
+
+    A THM or picoCTF flag is words rather than hex, so there is no second line
+    of defence: if the braced pattern misses one, it publishes.
+    """
+
+    def test_every_case_variant_is_redacted(self):
+        for value in (
+            "HTB{real_answer}",
+            "htb{real_answer}",
+            "Htb{real_answer}",
+            "THM{real_answer}",
+            "thm{this_is_the_real_answer}",
+            "Thm{real_answer}",
+            "FLAG{real_answer}",
+            "flag{real_answer}",
+            "Flag{real_answer}",
+            "CTF{real_answer}",
+            "ctf{real_answer}",
+            "PICOCTF{real_answer}",
+            "picoCTF{real_answer}",
+            "pico{real_answer}",
+            "KEY{real_answer}",
+            "Key{real_answer}",
+        ):
+            with self.subTest(value=value):
+                output, findings = run_rule("WS001", f"The flag was {value}\n")
+                self.assertNotIn(value, output)
+                self.assertIn(MARKER, output)
+                self.assertEqual(len(redactions(findings)), 1)
+
+    def test_a_word_ending_in_a_prefix_is_not_a_flag(self):
+        for value in ("nothtb{x}", "unflag{x}", "HTB{}"):
+            with self.subTest(value=value):
+                output, findings = run_rule("WS001", value + "\n")
+                self.assertIn(value, output)
+                self.assertEqual(redactions(findings), [])
+
+
+class UnlabelledHexWarningTests(unittest.TestCase):
+    """The warning is about the value, not about where on the line it sits."""
+
+    def test_hex_in_running_text_warns(self):
+        for line in (
+            f"Then I pasted {HEX} into the box.",
+            f"Wrote it to /tmp/{HEX}",
+            f"I saved it as {HEX}.txt in my notes",
+        ):
+            with self.subTest(line=line):
+                output, findings = run_rule("WS001", line + "\n")
+                self.assertIn(HEX, output, "warning only, never a redaction")
+                self.assertEqual(redactions(findings), [])
+                self.assertEqual(len(warnings(findings)), 1)
+                self.assertIn("in running text", warnings(findings)[0].message)
+
+    def test_redact_bare_hex_stays_scoped_to_a_line_of_its_own(self):
+        line = f"Then I pasted {HEX} into the box.\n"
+        output, findings = run_rule("WS001", line, redact_bare_hex=True)
+        self.assertIn(HEX, output, "a hex string in prose is usually a hash")
+        self.assertEqual(redactions(findings), [])
+
+    def test_a_checksum_line_is_neither_redacted_nor_warned_about(self):
+        for line in (f"{HEX}  ubuntu.iso", f"{HEX} *ubuntu.iso"):
+            with self.subTest(line=line):
+                output, findings = run_rule("WS001", line + "\n")
+                self.assertIn(HEX, output)
+                self.assertEqual(findings, [])
