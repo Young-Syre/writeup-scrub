@@ -2,7 +2,7 @@
 
 import unittest
 
-from .support import fixture, redactions, run_rule
+from .support import fixture, redactions, run_rule, warnings
 
 MARKER = "[REDACTED: secret]"
 
@@ -177,3 +177,118 @@ class SecretsNegativeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TruncatedPrivateKeyTests(unittest.TestCase):
+    """A BEGIN banner with no END banner must not eat the rest of the writeup.
+
+    Pasting the first line of a key to show it was unencrypted is an ordinary
+    thing to do in a writeup. Scanning forward to a banner that never arrives
+    once deleted everything after it, which with ``--in-place`` is the source.
+    """
+
+    PROSE = (
+        "# Machine\n"
+        "\n"
+        "I pulled the key off the box:\n"
+        "\n"
+        "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+        "\n"
+        "(truncated for the writeup)\n"
+        "\n"
+        "## Privilege escalation\n"
+        "\n"
+        "The cron job ran a world-writable script.\n"
+    )
+
+    def test_banner_in_prose_changes_nothing_and_warns(self):
+        output, findings = run_rule("WS002", self.PROSE)
+        self.assertEqual(output, self.PROSE, "the writeup must survive intact")
+        self.assertEqual(redactions(findings), [])
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].kind, "warning")
+        self.assertIn("no key body", findings[0].message)
+
+    def test_real_body_without_end_banner_is_still_redacted(self):
+        body = "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAA"
+        text = (
+            "# Machine\n"
+            "\n"
+            "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+            f"{body}\n"
+            "\n"
+            "## Privilege escalation\n"
+            "\n"
+            "The cron job ran a world-writable script.\n"
+        )
+        output, findings = run_rule("WS002", text)
+        self.assertNotIn(body, output)
+        self.assertIn("[REDACTED: private key material]", output)
+        self.assertIn("## Privilege escalation", output)
+        self.assertIn("The cron job ran a world-writable script.", output)
+        self.assertEqual(len(redactions(findings)), 1)
+        self.assertIn("no END banner found", redactions(findings)[0].message)
+
+    def test_rfc1421_headers_and_their_blank_line_are_redacted(self):
+        text = (
+            "-----BEGIN RSA PRIVATE KEY-----\n"
+            "Proc-Type: 4,ENCRYPTED\n"
+            "DEK-Info: AES-128-CBC,F8E7D6C5B4A3928170615243\n"
+            "\n"
+            "MIIEpAIBAAKCAQEAvQ8xZ3kLmNoPqRsTuVwXyZ0123456789abcdefghijklmnop\n"
+            "-----END RSA PRIVATE KEY-----\n"
+            "\n"
+            "Then I cracked it.\n"
+        )
+        output, findings = run_rule("WS002", text)
+        self.assertNotIn("DEK-Info", output, "the IV is key material too")
+        self.assertNotIn("MIIEpAIBAAKCAQEA", output)
+        self.assertIn("-----BEGIN RSA PRIVATE KEY-----", output)
+        self.assertIn("-----END RSA PRIVATE KEY-----", output)
+        self.assertIn("Then I cracked it.", output)
+        self.assertEqual(findings[0].extra["lines_removed"], 4)
+
+    def test_a_second_banner_after_a_truncated_one_is_still_seen(self):
+        body = "MIIEpAIBAAKCAQEAvQ8xZ3kLmNoPqRsTuVwXyZ0123456789abcdefghijklmnop"
+        text = (
+            "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+            "the key is in the vault, not here\n"
+            "-----BEGIN RSA PRIVATE KEY-----\n"
+            f"{body}\n"
+            "-----END RSA PRIVATE KEY-----\n"
+        )
+        output, findings = run_rule("WS002", text)
+        self.assertNotIn(body, output)
+        self.assertIn("the key is in the vault, not here", output)
+        self.assertEqual(len(redactions(findings)), 1)
+        self.assertEqual(len(warnings(findings)), 1)
+
+    def test_openai_key_prefixes_are_all_redacted(self):
+        for value in (
+            "sk-abcdefghij0123456789ABCDEFGHIJ",
+            "sk-proj-abcdefghij0123456789ABCDEFGHIJ",
+            "sk-svcacct-abcdefghij0123456789ABCD",
+            "sk-admin-abcdefghij0123456789ABCDEF",
+        ):
+            with self.subTest(value=value):
+                output, _ = run_rule("WS002", value + "\n")
+                self.assertNotIn(value, output)
+
+    def test_every_session_cookie_name_is_matched(self):
+        for name in (
+            "PHPSESSID",
+            "JSESSIONID",
+            "laravel_session",
+            "session",
+            "sessionid",
+            "_session_id",
+            "remember_token",
+        ):
+            with self.subTest(name=name):
+                output, _ = run_rule(
+                    "WS002",
+                    f"Cookie: {name}=abcdefgh12345678\n",
+                    detect_session_cookies=True,
+                )
+                self.assertNotIn("abcdefgh12345678", output)
+                self.assertIn(f"{name}=", output, "the cookie name should survive")

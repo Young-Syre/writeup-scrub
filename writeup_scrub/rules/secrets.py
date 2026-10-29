@@ -44,7 +44,9 @@ PATTERNS: dict[str, tuple[re.Pattern[str], str]] = {
         "SendGrid API key",
     ),
     "openai_key": (
-        re.compile(r"\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_\-]{20,}\b"),
+        # No need to spell out proj-/svcacct-/admin-: the character class
+        # already contains the hyphen, so the prefixes match as body.
+        re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}\b"),
         "OpenAI API key",
     ),
     "twilio_key": (
@@ -62,8 +64,10 @@ JWT_PATTERNS = {"jwt"}
 SESSION_COOKIE_PATTERNS: dict[str, tuple[re.Pattern[str], str]] = {
     "session_cookie": (
         re.compile(
+            # Longest first: `session` before `sessionid` only matched the
+            # latter by backtracking off the `=`.
             r"\b(?:PHPSESSID|JSESSIONID|ASP\.NET_SessionId|laravel_session|"
-            r"connect\.sid|session|sessionid|_session_id|remember_token)"
+            r"connect\.sid|_session_id|sessionid|session|remember_token)"
             r"=([A-Za-z0-9%._\-]{8,})"
         ),
         "session cookie",
@@ -78,6 +82,21 @@ PRIVATE_KEY_BEGIN = re.compile(
     r"^(?P<indent>\s*)-----BEGIN (?P<kind>[A-Z0-9 ]*?)PRIVATE KEY(?: BLOCK)?-----\s*$"
 )
 PRIVATE_KEY_END = re.compile(r"^\s*-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----\s*$")
+
+# A PEM payload is base64, conventionally 64 characters to the line, optionally
+# preceded by RFC 1421 headers (``Proc-Type:``, ``DEK-Info:``) and the blank
+# line that separates those from the payload. The scan for the body needs these
+# because a writeup quite reasonably contains a BEGIN banner with no END banner
+# -- someone pasted the first line to show the key was unencrypted, or truncated
+# the block by hand. Without a shape test the forward scan treats the rest of
+# the file as key material and deletes it.
+PEM_BASE64_RE = re.compile(r"^\s*[A-Za-z0-9+/]+={0,2}\s*$")
+PEM_HEADER_RE = re.compile(r"^\s*[A-Za-z][A-Za-z0-9-]*:\s*\S")
+
+# A base64 line this short is more likely to be an ordinary word on its own
+# line than a key. It is only required of the *first* body line: the last line
+# of a real payload is as short as the key length leaves it.
+PEM_MIN_FIRST_LINE = 16
 
 
 class SecretsRule(Rule):
@@ -142,20 +161,40 @@ class SecretsRule(Rule):
                 index += 1
                 continue
             body: list[Line] = []
+            # Blank lines are only part of the block if more body follows them,
+            # so they are held back rather than committed on sight.
+            pending: list[Line] = []
             cursor = index + 1
             end_found = False
+            stopped_at: Line | None = None
             while cursor < len(doc.lines):
                 candidate = doc.lines[cursor]
                 if candidate.dropped:
                     cursor += 1
                     continue
-                if PRIVATE_KEY_END.match(candidate.text):
+                text = candidate.text
+                if PRIVATE_KEY_END.match(text):
                     end_found = True
                     break
-                if FENCE_RE.match(candidate.text):
+                if FENCE_RE.match(text):
                     break  # key block ran past the end of its code fence
-                body.append(candidate)
-                cursor += 1
+                if not text.strip():
+                    pending.append(candidate)
+                    cursor += 1
+                    continue
+                if PEM_HEADER_RE.match(text) or (
+                    PEM_BASE64_RE.match(text)
+                    and (body or len(text.strip()) >= PEM_MIN_FIRST_LINE)
+                ):
+                    body.extend(pending)
+                    pending.clear()
+                    body.append(candidate)
+                    cursor += 1
+                    continue
+                # Prose. The block has no END banner and stops here, not at the
+                # end of the file.
+                stopped_at = candidate
+                break
             if body:
                 removed = "\n".join(item.text for item in body)
                 for item in body:
@@ -176,7 +215,30 @@ class SecretsRule(Rule):
                         extra={"lines_removed": len(body)},
                     )
                 )
-            index = cursor + 1
+            elif not end_found:
+                # A banner with nothing key-shaped after it. Redacting here
+                # would mean deleting the writeup, so say so and change nothing.
+                findings.append(
+                    Finding(
+                        rule=self.id,
+                        severity=Severity.MEDIUM,
+                        line=line.number,
+                        kind="warning",
+                        message=(
+                            "private key banner with no key body and no END "
+                            "banner; nothing redacted -- check by hand that no "
+                            "key material follows"
+                        ),
+                        extra={
+                            "stopped_at_line": (
+                                stopped_at.number if stopped_at else None
+                            )
+                        },
+                    )
+                )
+            # A line that stopped the scan has not been consumed: it could be
+            # the next BEGIN banner.
+            index = cursor if stopped_at is not None else cursor + 1
         return findings
 
 
